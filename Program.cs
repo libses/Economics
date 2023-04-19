@@ -1,11 +1,10 @@
-﻿using System.Text.Json;
-using System.Text.Json.Serialization;
-using System.Xml.Linq;
+﻿using System.Text;
 
 namespace Economics
 {
     internal class Program
     {
+        public static Dictionary<string, double> tickerToMedianDayGrowth= new Dictionary<string, double>();
         static async Task Main(string[] args)
         {
             var news = ParseFromCsv();
@@ -15,10 +14,13 @@ namespace Economics
             var dateToTokens = ExtractDateToTokensDictionary(news);
             Console.WriteLine("DateToTokens Extracted");
             var dateToTickerToPrice = ExtractDateToTickerToPriceDict(prices);
+            DetermineAverageGrowth(dateToTickerToPrice);
             Console.WriteLine("dateToTickerToPrice extracted");
+            var daysCount = 7;
+
 
             var wordData = new Dictionary<string, WordDataExtended>();
-            for (int i = 1; i <= 7; i++)
+            for (int i = 1; i <= daysCount; i++)
             {
                 Console.WriteLine(i);
                 var tokenToTickerToPriceDiffs = ExtractTokenToTickerToPriceDifferences(prices, dateToTokens, dateToTickerToPrice, i);
@@ -27,7 +29,123 @@ namespace Economics
                 Console.WriteLine("got word data");
             }
 
-            
+            ExportAll(wordData, daysCount);
+        }
+
+        public static void DetermineAverageGrowth(Dictionary<DateTime, Dictionary<string, StockPrice>> prices)
+        {
+            var tickers = "MOEXCH\tMOEXCN\tMOEXEU\tMOEXFN\tMOEXMM\tMOEXOG\tMOEXTL\tMOEXTN".Split("\t");
+            var tickerToPriceDiffs = new Dictionary<string, List<double>>();
+            foreach (var ticker in tickers)
+            {
+                tickerToPriceDiffs.Add(ticker, new());
+            }
+
+            var start = DateTime.Parse("2012/01/03");
+            var end = DateTime.Parse("2023/03/20");
+            for (DateTime i = start; i < end; i = i.AddDays(1))
+            {
+                if (!prices.ContainsKey(i))
+                {
+                    continue;
+                }
+
+                if (!prices.ContainsKey(i.AddDays(-1)))
+                {
+                    continue;
+                }
+
+                var todayPrices = prices[i];
+                var yesterdayPrices = prices[i.AddDays(-1)];
+                foreach (var ticker in tickers)
+                {
+                    if (!yesterdayPrices.ContainsKey(ticker))
+                    {
+                        continue;
+                    }
+
+                    var priceDiff = todayPrices[ticker].Price / yesterdayPrices[ticker].Price;
+                    tickerToPriceDiffs[ticker].Add(priceDiff);
+                }
+            }
+
+            tickerToMedianDayGrowth = tickerToPriceDiffs.ToDictionary(x => x.Key, y => y.Value.OrderBy(z => z).ToArray().Median());
+        }
+
+        public static void ExportAll(Dictionary<string, WordDataExtended> wordData, int daysCount)
+        {
+            foreach (var word in wordData.Values)
+            {
+                var matrix = ToMatrix(word, daysCount);
+                if (matrix == null)
+                {
+                    continue;
+                }
+
+                var csv = ToCsv(matrix);
+                File.WriteAllText($"CSV\\{word.Word}.csv", csv);
+            }
+        }
+
+        public static string[,]? ToMatrix(WordDataExtended wordData, int daysCount)
+        {
+            var sb = new string[wordData.Data.Count + 1, daysCount + 1];
+            sb[0, 0] = wordData.Word;
+            for (int i = 1; i < daysCount + 1; i++)
+            {
+                sb[0, i] = i.ToString(); 
+            }
+
+            var keys = wordData.Data.Keys.ToArray();
+            for (int i = 1; i < wordData.Data.Count + 1; i++)
+            {
+                sb[i, 0] = keys[i - 1].Name;
+            }
+
+            for (int first = 1; first < wordData.Data.Count + 1; first++)
+            {
+                for (int second = 1; second < daysCount + 1; second++)
+                {
+                    if (!wordData.Data.ContainsKey(keys[first - 1]))
+                    {
+                        continue;
+                    }
+
+                    var dw = wordData.Data[keys[first - 1]];
+                    if (!dw.ContainsKey(new DateWindow { Count = second }))
+                    {
+                        continue;
+                    }
+
+                    if (dw[new DateWindow { Count = second }].Length < 300)
+                    {
+                        return null;
+                    }
+
+                    var growthByDay = tickerToMedianDayGrowth[keys[first - 1].Name];
+                    var growth = Math.Pow(growthByDay, second);
+                    sb[first, second] = (dw[new DateWindow { Count = second }].Median() - growth).ToString("0.####");
+                }
+            }
+
+            return sb;
+        }
+
+        public static string ToCsv(string[,] matrix)
+        {
+            var sb = new StringBuilder();
+            for (int row = 0; row < matrix.GetLength(1); row++)
+            {
+                for (int column = 0; column < matrix.GetLength(0); column++)
+                {
+                    sb.Append(matrix[column, row]);
+                    sb.Append(";");
+                }
+
+                sb.AppendLine();
+            }
+
+            return sb.ToString();
         }
 
         public static void WriteToBinaryFile<T>(string filePath, T objectToWrite, bool append = false)
@@ -54,7 +172,7 @@ namespace Economics
             {
                 if (!toExtend.ContainsKey(word))
                 {
-                    toExtend.Add(word, new WordDataExtended());
+                    toExtend.Add(word, new WordDataExtended() { Word = word });
                 }
                 
                 var currentWordData = toExtend[word];
