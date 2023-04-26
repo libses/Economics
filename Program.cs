@@ -1,15 +1,49 @@
 ﻿using System.Text;
+//Сейчас все значения какие-то уж слишком негативные. Я не думаю, что мне нужно брать средний рост по дням, надо придумать что-то другое. Возможно возведение в степень здесь не является валидной операцией.
+//Получается слишком много отрицательных значений. Это не очень реалистично.
+//Нужны наверн ещё какие-то доверительные интервалы или что-то в этом духе. Иначе слишком уж получается странно, похожие слова как-то влияют по разному.
+//И возможно стоит ре-парсануть новости нормально. Потому что сейчас слишком много всратых слов типа вмоскве и прочих. Наверн нужно ещё и в нормальную форму все привести, будет более чётко.
+//2018/10/12
+//03.01.2012
 
 namespace Economics
 {
+    public class WordSV
+    {
+        public double MaxDispersion;
+        public double GrowthTotal;
+        public Dictionary<string, string> TickerDispersion;
+        public string[,] Matrix;
+    }
+
+    public class CsvSV
+    {
+        public string Word;
+        public string CSV;
+        public double MaxDispersion;
+        public double GrowthTotal;
+    }
+
+    public static class Settings
+    {
+        public static int FrequencyFilter = 700;
+        public static int TakeCount = 100;
+    }
+
     internal class Program
     {
         public static Dictionary<string, double> tickerToMedianDayGrowth= new Dictionary<string, double>();
         static async Task Main(string[] args)
         {
-            var news = ParseFromCsv();
+            var news = ParseFromCsvLentaEconomics();
             Console.WriteLine("News parsed");
+            var newsStart = news.Min(x => x.Date);
+            var newsEnd = news.Max(x => x.Date);
             var prices = File.ReadAllLines("full.csv").Skip(1).Select(x => new StockPrice(x)).Where(x => x.Price != 0).ToArray();
+            var pricesStart = prices.Min(x => x.Date);
+            var pricesEnd = prices.Max(x => x.Date);
+            Console.WriteLine($"Mins are {newsStart} {pricesStart}");
+            Console.WriteLine($"Maxes are {newsEnd} {pricesEnd}");
             Console.WriteLine("Prices parsed");
             var dateToTokens = ExtractDateToTokensDictionary(news);
             Console.WriteLine("DateToTokens Extracted");
@@ -42,7 +76,7 @@ namespace Economics
             }
 
             var start = DateTime.Parse("2012/01/03");
-            var end = DateTime.Parse("2023/03/20");
+            var end = DateTime.Parse("2020/11/01");
             for (DateTime i = start; i < end; i = i.AddDays(1))
             {
                 if (!prices.ContainsKey(i))
@@ -74,6 +108,7 @@ namespace Economics
 
         public static void ExportAll(Dictionary<string, WordDataExtended> wordData, int daysCount)
         {
+            var models = new List<CsvSV>();
             foreach (var word in wordData.Values)
             {
                 var matrix = ToMatrix(word, daysCount);
@@ -82,12 +117,22 @@ namespace Economics
                     continue;
                 }
 
-                var csv = ToCsv(matrix);
-                File.WriteAllText($"CSV\\{word.Word}.csv", csv);
+                var csv = ToCsv(matrix.Matrix, matrix.TickerDispersion);
+                var model = new CsvSV() { CSV = csv, MaxDispersion = matrix.MaxDispersion, Word = word.Word, GrowthTotal = matrix.GrowthTotal };
+                models.Add(model);
+            }
+
+            models = models.OrderBy(x => x.MaxDispersion).Take(Settings.TakeCount).OrderByDescending(x => x.GrowthTotal).ToList();
+            Console.WriteLine(models[0].MaxDispersion);
+            var counter = 0;
+            foreach (var model in models)
+            {
+                File.WriteAllText($"CSV\\{counter} growth {model.GrowthTotal} dispersion {model.MaxDispersion} {model.Word}.csv", model.CSV);
+                counter++;
             }
         }
 
-        public static string[,]? ToMatrix(WordDataExtended wordData, int daysCount)
+        public static WordSV ToMatrix(WordDataExtended wordData, int daysCount)
         {
             var sb = new string[wordData.Data.Count + 1, daysCount + 1];
             sb[0, 0] = wordData.Word;
@@ -102,8 +147,13 @@ namespace Economics
                 sb[i, 0] = keys[i - 1].Name;
             }
 
+            var minDispersion = 1000000000d;
+            var sum = 0d;
+            var tickerMaxDispersion = new Dictionary<string, string>();
             for (int first = 1; first < wordData.Data.Count + 1; first++)
             {
+                var maxDispersion = 0d;
+                var ticker = keys[first - 1].Name;
                 for (int second = 1; second < daysCount + 1; second++)
                 {
                     if (!wordData.Data.ContainsKey(keys[first - 1]))
@@ -117,21 +167,33 @@ namespace Economics
                         continue;
                     }
 
-                    if (dw[new DateWindow { Count = second }].Length < 300)
+                    if (dw[new DateWindow { Count = second }].Length < Settings.FrequencyFilter)
                     {
                         return null;
                     }
 
                     var growthByDay = tickerToMedianDayGrowth[keys[first - 1].Name];
-                    var growth = Math.Pow(growthByDay, second);
+                    var growth = 1 + (growthByDay - 1) * second;
                     sb[first, second] = (dw[new DateWindow { Count = second }].Median() - growth).ToString("0.####");
+                    var dispersion = dw[new DateWindow { Count = second }].Dispersion();
+                    sum += dw[new DateWindow { Count = second }].Median() - growth;
+                    if (dispersion > maxDispersion)
+                    {
+                        maxDispersion = dispersion;
+                    }
+                }
+
+                tickerMaxDispersion.Add(ticker, maxDispersion.ToString("0.####"));
+                if (maxDispersion < minDispersion)
+                {
+                    minDispersion = maxDispersion;
                 }
             }
 
-            return sb;
+            return new WordSV() { Matrix = sb, MaxDispersion = minDispersion, GrowthTotal = sum, TickerDispersion = tickerMaxDispersion };
         }
 
-        public static string ToCsv(string[,] matrix)
+        public static string ToCsv(string[,] matrix, Dictionary<string, string> dispersions)
         {
             var sb = new StringBuilder();
             for (int row = 0; row < matrix.GetLength(1); row++)
@@ -143,6 +205,13 @@ namespace Economics
                 }
 
                 sb.AppendLine();
+            }
+
+            foreach (var dispersion in dispersions.Keys)
+            {
+                sb.Append(dispersion);
+                sb.Append(";");
+                sb.AppendLine(dispersions[dispersion]);
             }
 
             return sb.ToString();
@@ -284,6 +353,16 @@ namespace Economics
             return news;
         }
 
-     
+        public static SimpleNews[] ParseFromCsvLentaEconomics()
+        {
+            var lines = File.ReadAllLines("economical_lenta.csv");
+            var news = lines.Skip(1)
+                .Select(x => x.Split(";"))
+                .Where(x => x.Length == 3)
+                .Where(x => long.TryParse(x[2], out var _))
+                .Select(x => new SimpleNews(x[1], long.Parse(x[2])))
+                .ToArray();
+            return news;
+        }
     }
 }

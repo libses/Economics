@@ -20,5 +20,12 @@
             Date = DateTime.Parse(date);
             Tokens = Text.ToLower().Split(" ").Select(x => string.Join("", x.Where(y => char.IsLetter(y)))).Distinct().ToArray();
         }
+
+        public SimpleNews(string text, long timestamp)
+        {
+            Text = text;
+            Tokens = Text.ToLower().Split(" ").Select(x => string.Join("", x.Where(y => char.IsLetter(y)))).Distinct().ToArray();
+            Date = DateTimeOffset.FromUnixTimeSeconds(timestamp).Date;
+        }
     }
 }
