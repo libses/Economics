@@ -1,16 +1,11 @@
 ﻿using System.Text;
-//Сейчас все значения какие-то уж слишком негативные. Я не думаю, что мне нужно брать средний рост по дням, надо придумать что-то другое. Возможно возведение в степень здесь не является валидной операцией.
-//Получается слишком много отрицательных значений. Это не очень реалистично.
-//Нужны наверн ещё какие-то доверительные интервалы или что-то в этом духе. Иначе слишком уж получается странно, похожие слова как-то влияют по разному.
-//И возможно стоит ре-парсануть новости нормально. Потому что сейчас слишком много всратых слов типа вмоскве и прочих. Наверн нужно ещё и в нормальную форму все привести, будет более чётко.
-//2018/10/12
-//03.01.2012
 
 namespace Economics
 {
     public class WordSV
     {
         public double MaxDispersion;
+        public int Count;
         public double GrowthTotal;
         public Dictionary<string, string> TickerDispersion;
         public string[,] Matrix;
@@ -18,6 +13,7 @@ namespace Economics
 
     public class CsvSV
     {
+        public int Count;
         public string Word;
         public string CSV;
         public double MaxDispersion;
@@ -26,14 +22,27 @@ namespace Economics
 
     public static class Settings
     {
-        public static int FrequencyFilter = 700;
+        public static Dictionary<string, string> tickerToName = new Dictionary<string, string>
+        {
+            {"MOEXCH","Him-neftehim" },
+            {"MOEXCN","Potrebsektor" },
+            {"MOEXEU","ElectroEnerg" },
+            {"MOEXFN", "Finances" },
+            {"MOEXMM", "Metal and dobicha" },
+            {"MOEXOG", "Neftegaz" },
+            {"MOEXTL", "Telecom" },
+            {"MOEXTN", "Transport" }
+        };
+
+        public static int FrequencyFilter = 200;
         public static int TakeCount = 100;
+        public static Dictionary<int, List<double>> countToDispersion = new Dictionary<int, List<double>>();
     }
 
     internal class Program
     {
         public static Dictionary<string, double> tickerToMedianDayGrowth= new Dictionary<string, double>();
-        static async Task Main(string[] args)
+        static void Main(string[] args)
         {
             var news = ParseFromCsvLentaEconomics();
             Console.WriteLine("News parsed");
@@ -118,16 +127,27 @@ namespace Economics
                 }
 
                 var csv = ToCsv(matrix.Matrix, matrix.TickerDispersion);
-                var model = new CsvSV() { CSV = csv, MaxDispersion = matrix.MaxDispersion, Word = word.Word, GrowthTotal = matrix.GrowthTotal };
+                var model = new CsvSV() { CSV = csv, MaxDispersion = matrix.MaxDispersion, Word = word.Word, GrowthTotal = matrix.GrowthTotal, Count = matrix.Count };
                 models.Add(model);
             }
 
-            models = models.OrderBy(x => x.MaxDispersion).Take(Settings.TakeCount).OrderByDescending(x => x.GrowthTotal).ToList();
-            Console.WriteLine(models[0].MaxDispersion);
+            FilterAndWrite("veryFreqExtreme", models, 50, 1);
+            FilterAndWrite("veryFreqRare", models, 50, 10);
+        }
+
+        public static void FilterAndWrite(string dir, List<CsvSV> models, int totalCount, int dispersionDivision)
+        {
+            var fModels = models
+                .OrderBy(x => x.MaxDispersion / x.Count)
+                .Take(models.Count / dispersionDivision)
+                .OrderByDescending(x => Math.Abs(x.GrowthTotal))
+                .Take(totalCount)
+                .ToList();
             var counter = 0;
-            foreach (var model in models)
+            foreach (var model in fModels)
             {
-                File.WriteAllText($"CSV\\{counter} growth {model.GrowthTotal} dispersion {model.MaxDispersion} {model.Word}.csv", model.CSV);
+                Directory.CreateDirectory(dir);
+                File.WriteAllText($"{dir}\\{counter} growth {model.GrowthTotal} dispersionDC {model.MaxDispersion / model.Count} count {model.Count} word {model.Word}.csv", model.CSV);
                 counter++;
             }
         }
@@ -148,11 +168,14 @@ namespace Economics
             }
 
             var minDispersion = 1000000000d;
-            var sum = 0d;
+            var minLength = 0;
+            var minMedian = 0d;
             var tickerMaxDispersion = new Dictionary<string, string>();
             for (int first = 1; first < wordData.Data.Count + 1; first++)
             {
                 var maxDispersion = 0d;
+                var maxLenght = 0;
+                var maxMedian = 0d;
                 var ticker = keys[first - 1].Name;
                 for (int second = 1; second < daysCount + 1; second++)
                 {
@@ -167,6 +190,13 @@ namespace Economics
                         continue;
                     }
 
+                    if (!Settings.countToDispersion.ContainsKey(dw[new DateWindow { Count = second }].Length))
+                    {
+                        Settings.countToDispersion.Add(dw[new DateWindow { Count = second }].Length, new List<double>());
+                    }
+
+                    Settings.countToDispersion[dw[new DateWindow { Count = second }].Length].Add(dw[new DateWindow { Count = second }].Dispersion());
+
                     if (dw[new DateWindow { Count = second }].Length < Settings.FrequencyFilter)
                     {
                         return null;
@@ -176,10 +206,11 @@ namespace Economics
                     var growth = 1 + (growthByDay - 1) * second;
                     sb[first, second] = (dw[new DateWindow { Count = second }].Median() - growth).ToString("0.####");
                     var dispersion = dw[new DateWindow { Count = second }].Dispersion();
-                    sum += dw[new DateWindow { Count = second }].Median() - growth;
                     if (dispersion > maxDispersion)
                     {
                         maxDispersion = dispersion;
+                        maxMedian = (dw[new DateWindow { Count = second }].Median() - growth);
+                        maxLenght = dw[new DateWindow { Count = second }].Length;
                     }
                 }
 
@@ -187,10 +218,12 @@ namespace Economics
                 if (maxDispersion < minDispersion)
                 {
                     minDispersion = maxDispersion;
+                    minLength = maxLenght;
+                    minMedian = maxMedian;
                 }
             }
 
-            return new WordSV() { Matrix = sb, MaxDispersion = minDispersion, GrowthTotal = sum, TickerDispersion = tickerMaxDispersion };
+            return new WordSV() { Matrix = sb, MaxDispersion = minDispersion, GrowthTotal = minMedian, TickerDispersion = tickerMaxDispersion, Count = minLength };
         }
 
         public static string ToCsv(string[,] matrix, Dictionary<string, string> dispersions)
@@ -200,7 +233,15 @@ namespace Economics
             {
                 for (int column = 0; column < matrix.GetLength(0); column++)
                 {
-                    sb.Append(matrix[column, row]);
+                    if (Settings.tickerToName.ContainsKey(matrix[column, row]))
+                    {
+                        sb.Append(Settings.tickerToName[matrix[column, row]]);
+                    }
+                    else
+                    {
+                        sb.Append(matrix[column, row]);
+                    }
+                    
                     sb.Append(";");
                 }
 
@@ -215,24 +256,6 @@ namespace Economics
             }
 
             return sb.ToString();
-        }
-
-        public static void WriteToBinaryFile<T>(string filePath, T objectToWrite, bool append = false)
-        {
-            using (Stream stream = File.Open(filePath, append ? FileMode.Append : FileMode.Create))
-            {
-                var binaryFormatter = new System.Runtime.Serialization.Formatters.Binary.BinaryFormatter();
-                binaryFormatter.Serialize(stream, objectToWrite);
-            }
-        }
-
-        public static T ReadFromBinaryFile<T>(string filePath)
-        {
-            using (Stream stream = File.Open(filePath, FileMode.Open))
-            {
-                var binaryFormatter = new System.Runtime.Serialization.Formatters.Binary.BinaryFormatter();
-                return (T)binaryFormatter.Deserialize(stream);
-            }
         }
 
         private static Dictionary<string, WordDataExtended> GetWordDataExtended(Dictionary<string, WordDataExtended> toExtend, int window, Dictionary<string, Dictionary<string, List<double>>> tokenToTickerToPriceDifferences)
